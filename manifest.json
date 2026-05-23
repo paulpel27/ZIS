@@ -1,0 +1,19 @@
+{
+  "name": "MedCore Ziekenhuis Informatie Systeem",
+  "short_name": "MedCore ZIS",
+  "description": "Een modern en klinisch tactiel PWA voor patiënten- en apotheekbeheer.",
+  "lang": "nl",
+  "start_url": "index.html",
+  "display": "standalone",
+  "background_color": "#f9f9ff",
+  "theme_color": "#007a8c",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "logo.png",
+      "sizes": "192x192 512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <!-- SEO Tags -->
+  <title>MedCore ZIS - Ziekenhuis Informatie Systeem</title>
+  <meta name="description" content="MedCore Ziekenhuis Informatie Systeem (ZIS) - Modern, offline-first PWA ontworpen voor klinische tactiliteit en efficiënt beheer.">
+  <meta name="theme-color" content="#007a8c">
+  
+  <!-- PWA Manifest & App Icons -->
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="logo.png">
+  <link rel="apple-touch-icon" href="logo.png">
+  <meta name="apple-mobile-web-app-status-bar" content="#007a8c">
+  
+  <!-- CSS Stylesheet -->
+  <link rel="stylesheet" href="styles.css">
+  
+  <!-- FontAwesome Icons CDN -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" integrity="sha512-1ycn6IcaQQ40/MKBW2W4Rhis/DbILU74C1vSrLJxCq57o941Ym01SwNsOMqvEBFlcgUa6xLiPY/NS5R+E6ztJQ==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+  
+  <!-- External Libraries (Cached by SW) -->
+  <!-- Dexie.js: IndexedDB Wrapper -->
+  <script src="https://unpkg.com/dexie@3.2.4/dist/dexie.js"></script>
+  <!-- Chart.js: Premium Graphs -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.js"></script>
+</head>
+<body>
+
+  <!-- App Wrapper Shell -->
+  <main id="app-container">
+    
+    <!-- Top App Bar -->
+    <header class="top-app-bar" id="app-header">
+      <div class="brand-section">
+        <img src="logo.png" alt="MedCore Logo" class="app-logo">
+        <h1 class="brand-name">MedCore <span class="brand-tag">ZIS</span></h1>
+      </div>
+      
+      <div class="bar-actions">
+        <!-- Online/Offline status indicator -->
+        <div id="connection-status" class="connection-badge">
+          <span class="dot"></span> Online
+        </div>
+        
+        <!-- User Switcher (Clinical Role Simulation) -->
+        <div class="user-profile-section" id="user-profile-widget">
+          <i class="fas fa-user-circle"></i>
+          <div class="role-select-wrapper">
+            <select id="active-role-select" class="role-select" aria-label="Klinische rol wijzigen">
+              <!-- Dynamically populated users -->
+            </select>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Viewport Content Area (populated dynamically by app.js) -->
+    <section id="main-content" class="main-content">
+      <!-- SPA Content injected here -->
+    </section>
+
+    <!-- Floating Action Button (FAB) -->
+    <button id="global-fab" class="nm-fab d-none" aria-label="Toevoegen">
+      <i class="fas fa-plus"></i>
+    </button>
+
+    <!-- Bottom Navigation Bar -->
+    <nav class="bottom-nav-bar" id="bottom-navigation" aria-label="Hoofdnavigatie">
+      <button class="nav-item active" data-view="dashboard" id="nav-dashboard">
+        <i class="fas fa-chart-pie"></i>
+        <span>Dashboard</span>
+      </button>
+      
+      <button class="nav-item" data-view="patients" id="nav-patients">
+        <i class="fas fa-user-injured"></i>
+        <span>Patiënten</span>
+      </button>
+      
+      <button class="nav-item" data-view="schedule" id="nav-schedule">
+        <i class="fas fa-calendar-check"></i>
+        <span>Planning</span>
+      </button>
+      
+      <button class="nav-item" data-view="records" id="nav-records">
+        <i class="fas fa-folder-open"></i>
+        <span>Archieven</span>
+      </button>
+    </nav>
+
+  </main>
+
+  <!-- Database & Application Code -->
+  <script src="db.js"></script>
+  <script src="app.js"></script>
+
+  <!-- PWA Service Worker Registration -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js')
+          .then(registration => {
+            console.log('MedCore ZIS Service Worker succesvol geregistreerd onder scope:', registration.scope);
+          })
+          .catch(error => {
+            console.error('Service Worker registratie mislukt:', error);
+          });
+      });
+    }
+  </script>
+</body>
+</html>
