@@ -12,7 +12,9 @@ const state = {
   activeLabResultId: null,
   currentPatientSearch: '',
   currentPatientFilter: 'all',
-  charts: {}
+  charts: {},
+  scheduleView: 'day', // 'day' or 'week'
+  selectedDoctorUsername: 'all' // 'all' or doctor username
 };
 
 // RBAC Permissions Matrix
@@ -23,7 +25,7 @@ const ROLES = {
   VERPLEEGKUNDIGE: 'Verpleegkundige'
 };
 
-const PERMISSIONS = {
+const DEFAULT_PERMISSIONS = {
   // View access
   view_dashboard: [ROLES.SUPERUSER, ROLES.DOKTER, ROLES.APOTHEKER, ROLES.VERPLEEGKUNDIGE],
   view_patients: [ROLES.SUPERUSER, ROLES.DOKTER, ROLES.APOTHEKER, ROLES.VERPLEEGKUNDIGE],
@@ -41,6 +43,30 @@ const PERMISSIONS = {
   view_pharmacy_details: [ROLES.SUPERUSER, ROLES.DOKTER, ROLES.APOTHEKER, ROLES.VERPLEEGKUNDIGE]
 };
 
+let PERMISSIONS = {};
+
+function loadPermissions() {
+  const saved = localStorage.getItem('medcore_zis_permissions');
+  if (saved) {
+    try {
+      PERMISSIONS = JSON.parse(saved);
+      // Safeguard: Ensure edit_users always contains SUPERUSER to avoid lockout
+      if (!PERMISSIONS.edit_users) {
+        PERMISSIONS.edit_users = [ROLES.SUPERUSER];
+      } else if (!PERMISSIONS.edit_users.includes(ROLES.SUPERUSER)) {
+        PERMISSIONS.edit_users.push(ROLES.SUPERUSER);
+      }
+      return;
+    } catch (e) {
+      console.error("Fout bij laden van opgeslagen machtigingen:", e);
+    }
+  }
+  // Deep clone default permissions
+  PERMISSIONS = JSON.parse(JSON.stringify(DEFAULT_PERMISSIONS));
+}
+
+loadPermissions();
+
 // Check if current user has permission
 function hasPermission(permissionKey) {
   if (!state.currentUser) return false;
@@ -53,9 +79,23 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Wait for database to initialize
   await db.open();
   
-  // Initialize default user
-  const adminUser = await db.users.where({ username: "admin" }).first();
-  state.currentUser = adminUser || { username: "admin", role: "Superuser", name: "Administrator" };
+  // Session check
+  const savedUsername = sessionStorage.getItem('medcore_zis_user');
+  const appContainer = document.getElementById('app-container');
+  
+  if (savedUsername) {
+    const userObj = await db.users.where({ username: savedUsername }).first();
+    if (userObj) {
+      state.currentUser = userObj;
+      if (appContainer) appContainer.classList.remove('not-logged-in');
+    } else {
+      state.currentUser = null;
+      if (appContainer) appContainer.classList.add('not-logged-in');
+    }
+  } else {
+    state.currentUser = null;
+    if (appContainer) appContainer.classList.add('not-logged-in');
+  }
   
   // Initialize Connection status (Online/Offline)
   updateConnectionStatus();
@@ -63,7 +103,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   window.addEventListener('offline', updateConnectionStatus);
 
   // Setup Event Listeners
-  setupHeader();
+  await setupHeader();
   setupNavigation();
   setupGlobalEvents();
   
@@ -83,37 +123,53 @@ function updateConnectionStatus() {
   }
 }
 
-// Setup Header Components (Switch User / Role display)
+// Setup Header Components (User Profile / Logout Display)
 async function setupHeader() {
-  const select = document.getElementById('active-role-select');
-  const users = await db.users.toArray();
-  
-  select.innerHTML = users.map(u => 
-    `<option value="${u.username}" ${state.currentUser.username === u.username ? 'selected' : ''}>${u.name} (${u.role})</option>`
-  ).join('');
+  const profileWidget = document.getElementById('user-profile-widget');
+  if (!profileWidget) return;
 
-  select.addEventListener('change', async (e) => {
-    const username = e.target.value;
-    const selectedUser = await db.users.where({ username }).first();
-    if (selectedUser) {
-      state.currentUser = selectedUser;
-      await logAction(state.currentUser.username, "USER_SWITCH", `Gebruiker gewisseld naar ${selectedUser.name}`);
-      
-      // Update UI components that depend on roles
-      updateNavigationVisibility();
-      
-      // Re-route current view or go to dashboard if current view is restricted
-      const currentTabBtn = document.querySelector(`.nav-item[data-view="${state.activeView}"]`);
-      if (currentTabBtn && currentTabBtn.classList.contains('d-none')) {
-        navigateTo('dashboard');
-      } else {
-        navigateTo(state.activeView);
-      }
-    }
-  });
+  if (state.currentUser) {
+    profileWidget.innerHTML = `
+      <i class="fas fa-user-circle" style="color:var(--primary-color); font-size:16px;"></i>
+      <span style="font-size:13px; font-weight:700; color:var(--text-color); margin-right:4px;">
+        ${state.currentUser.name} <span style="font-weight:400; color:var(--text-secondary);">(${state.currentUser.role})</span>
+      </span>
+      <button class="nm-btn" style="padding:4px 10px; font-size:11px; box-shadow:var(--shadow-small); margin:0; border-radius:12px;" onclick="logout()">
+        <i class="fas fa-sign-out-alt"></i> Uitloggen
+      </button>
+    `;
+  } else {
+    profileWidget.innerHTML = '';
+  }
 
   updateNavigationVisibility();
 }
+
+// Log out the current user and reset state
+async function logout() {
+  if (state.currentUser) {
+    await logAction(state.currentUser.username, "USER_LOGOUT", "Gebruiker is handmatig uitgelogd.");
+  }
+  
+  state.currentUser = null;
+  sessionStorage.removeItem('medcore_zis_user');
+
+  const appContainer = document.getElementById('app-container');
+  if (appContainer) appContainer.classList.add('not-logged-in');
+
+  // Refresh profile panel
+  await setupHeader();
+
+  // Clear temporary clinical search/navigation states for privacy
+  state.currentPatientSearch = '';
+  state.currentPatientFilter = 'all';
+  state.selectedPatientId = null;
+  state.charts = {};
+
+  // Re-route to login view
+  navigateTo('dashboard');
+}
+window.logout = logout;
 
 // Hide or show bottom tabs based on permissions
 function updateNavigationVisibility() {
@@ -173,7 +229,14 @@ function navigateTo(viewName) {
 // Render Core routing controller
 function renderActiveView() {
   const container = document.getElementById('main-content');
+  if (!container) return;
   container.innerHTML = ''; // Clear viewport
+
+  // Check login state
+  if (!state.currentUser) {
+    renderLoginView(container);
+    return;
+  }
 
   // Check general view permission
   if (!hasPermission(`view_${state.activeView}`)) {
@@ -196,6 +259,126 @@ function renderActiveView() {
       break;
   }
 }
+
+// Render Login Screen View
+function renderLoginView(container) {
+  container.innerHTML = `
+    <div class="login-card-wrapper">
+      <div class="login-card">
+        <div class="login-header">
+          <img src="logo.png" alt="MedCore Logo" class="login-logo">
+          <h1 class="login-title">MedCore <span class="brand-tag">ZIS</span></h1>
+          <p class="login-subtitle">Klinisch Zorgportaal</p>
+        </div>
+        
+        <div id="login-error-msg" class="login-error">
+          <i class="fas fa-exclamation-circle"></i> Onjuiste gebruikersnaam of wachtwoord.
+        </div>
+        
+        <form id="login-form">
+          <div class="form-group">
+            <label class="form-label">Gebruikersnaam</label>
+            <input type="text" id="login-username" name="username" class="nm-input" required placeholder="Voer uw gebruikersnaam in" autocomplete="username">
+          </div>
+          
+          <div class="form-group" style="margin-bottom: 24px;">
+            <label class="form-label">Wachtwoord</label>
+            <input type="password" id="login-password" name="password" class="nm-input" required placeholder="Voer uw wachtwoord in" autocomplete="current-password">
+          </div>
+          
+          <button type="submit" class="nm-btn nm-btn-primary" style="width:100%; padding:12px; font-size:14px; border-radius:var(--border-radius);">
+            <i class="fas fa-sign-in-alt"></i> Inloggen
+          </button>
+        </form>
+        
+        <!-- Demo Accounts Expander -->
+        <div class="demo-accounts-wrapper">
+          <div id="demo-accounts-toggle" class="demo-accounts-toggle" onclick="toggleDemoAccounts()">
+            <span>Toon demo accounts</span>
+            <i class="fas fa-chevron-down"></i>
+          </div>
+          
+          <div id="demo-accounts-list" class="demo-accounts-list">
+            <div class="demo-account-item">
+              <strong>Superuser (Admin):</strong><br>
+              Gebruikersnaam: <code style="font-weight:700;">admin</code> | Wachtwoord: <code>123</code>
+            </div>
+            <div class="demo-account-item">
+              <strong>Dokter (Cardiologie):</strong><br>
+              Gebruikersnaam: <code style="font-weight:700;">dr_janssen</code> | Wachtwoord: <code>123</code>
+            </div>
+            <div class="demo-account-item">
+              <strong>Apotheker:</strong><br>
+              Gebruikersnaam: <code style="font-weight:700;">apotheker_de_vries</code> | Wachtwoord: <code>123</code>
+            </div>
+            <div class="demo-account-item">
+              <strong>Verpleegkundige:</strong><br>
+              Gebruikersnaam: <code style="font-weight:700;">zuster_sara</code> | Wachtwoord: <code>123</code>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Submit Handler
+  document.getElementById('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = document.getElementById('login-username').value.toLowerCase().trim();
+    const password = document.getElementById('login-password').value;
+    const errorMsg = document.getElementById('login-error-msg');
+
+    if (errorMsg) errorMsg.style.display = 'none';
+
+    try {
+      const user = await db.users.where({ username }).first();
+      if (user && user.password === password) {
+        // Successful login
+        state.currentUser = user;
+        sessionStorage.setItem('medcore_zis_user', user.username);
+        
+        // Audit log action
+        await logAction(user.username, "USER_LOGIN", "Succesvol ingelogd via het zorgportaal.");
+        
+        // Remove not-logged-in class
+        const appContainer = document.getElementById('app-container');
+        if (appContainer) appContainer.classList.remove('not-logged-in');
+        
+        // Refresh Header Profile
+        await setupHeader();
+        
+        // Update Bottom Nav Visibility
+        updateNavigationVisibility();
+        
+        // Redirect to dashboard
+        navigateTo('dashboard');
+      } else {
+        // Show login error
+        if (errorMsg) {
+          errorMsg.style.display = 'block';
+          // Trigger shake animation again
+          errorMsg.style.animation = 'none';
+          errorMsg.offsetHeight; // trigger reflow
+          errorMsg.style.animation = null;
+        }
+      }
+    } catch (err) {
+      console.error("Fout tijdens inloggen:", err);
+      alert("Er is een databasefout opgetreden bij het inloggen.");
+    }
+  });
+}
+
+// Toggle Demo Accounts panel
+function toggleDemoAccounts() {
+  const toggle = document.getElementById('demo-accounts-toggle');
+  const list = document.getElementById('demo-accounts-list');
+  if (toggle && list) {
+    const isOpen = toggle.classList.toggle('open');
+    list.style.display = isOpen ? 'block' : 'none';
+  }
+}
+window.toggleDemoAccounts = toggleDemoAccounts;
 
 // Render unauthorized component
 function renderUnauthorized(container) {
@@ -740,9 +923,34 @@ function closePdfViewer() {
 // 4. SCHEDULE & APPOINTMENT VIEW RENDERER
 // ==========================================
 async function renderSchedule(container) {
-  // Calendar select day grid
+  // Fetch doctors for filter
+  const doctors = await db.users.where('role').equals(ROLES.DOKTER).toArray();
+  
+  // Create dropdown options
+  const doctorOptions = doctors.map(d => 
+    `<option value="${d.username}" ${state.selectedDoctorUsername === d.username ? 'selected' : ''}>${d.name} (${d.specialty})</option>`
+  ).join('');
+
   container.innerHTML = `
-    <h1 class="mb-4">Planning & Afspraken</h1>
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; margin-bottom:20px;">
+      <h1 style="margin:0;">Planning & Afspraken</h1>
+      
+      <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+        <!-- Doctor Filter -->
+        <div class="filter-wrapper" style="width:220px;">
+          <select id="schedule-doctor-filter" class="nm-select" aria-label="Filter op arts">
+            <option value="all" ${state.selectedDoctorUsername === 'all' ? 'selected' : ''}>Alle specialisten</option>
+            ${doctorOptions}
+          </select>
+        </div>
+        
+        <!-- View Switcher Toggles -->
+        <div class="nm-card" style="margin:0; padding:4px; display:flex; gap:4px; box-shadow:var(--shadow-small-pressed); border-radius:20px;">
+          <button id="btn-view-day" class="sub-tab-btn ${state.scheduleView === 'day' ? 'active' : ''}" style="margin:0; border-radius:16px; padding:6px 14px;" onclick="switchScheduleView('day')">Dag</button>
+          <button id="btn-view-week" class="sub-tab-btn ${state.scheduleView === 'week' ? 'active' : ''}" style="margin:0; border-radius:16px; padding:6px 14px;" onclick="switchScheduleView('week')">Week</button>
+        </div>
+      </div>
+    </div>
     
     <div class="schedule-container">
       <!-- Calendar column -->
@@ -758,15 +966,8 @@ async function renderSchedule(container) {
       </div>
 
       <!-- Schedule list column -->
-      <div>
-        <div class="nm-card">
-          <div class="nm-card-header">
-            <h3 class="nm-card-title"><i class="fas fa-calendar-check"></i> Afspraken op ${formatDate(state.selectedDate)}</h3>
-          </div>
-          <div class="appointment-list" id="appointments-list-container">
-            <!-- Load appts -->
-          </div>
-        </div>
+      <div id="schedule-right-column">
+        <!-- Content will be drawn dynamically -->
       </div>
     </div>
   `;
@@ -776,11 +977,35 @@ async function renderSchedule(container) {
 
   // Load appointments list
   loadAppointmentsList();
+
+  // Add event listener to doctor filter
+  document.getElementById('schedule-doctor-filter').addEventListener('change', (e) => {
+    state.selectedDoctorUsername = e.target.value;
+    loadAppointmentsList();
+  });
+}
+
+// Switch between Day and Week views
+function switchScheduleView(view) {
+  state.scheduleView = view;
+  const dayBtn = document.getElementById('btn-view-day');
+  const weekBtn = document.getElementById('btn-view-week');
+  if (dayBtn && weekBtn) {
+    if (view === 'day') {
+      dayBtn.classList.add('active');
+      weekBtn.classList.remove('active');
+    } else {
+      dayBtn.classList.remove('active');
+      weekBtn.classList.add('active');
+    }
+  }
+  loadAppointmentsList();
 }
 
 // Render Calendar Days
 function drawCalendar() {
   const daysGrid = document.getElementById('calendar-days-grid');
+  if (!daysGrid) return;
   
   // Headers (Mo, Tu, We, Th, Fr, Sa, Su)
   const headers = ['Ma', 'Di', 'Wo', 'Do', 'Vr', 'Za', 'Zo'];
@@ -794,7 +1019,6 @@ function drawCalendar() {
   }
   
   // Let's put 31 days in May
-  const selectedDay = parseInt(state.selectedDate.split('-')[2]);
   for (let day = 1; day <= 31; day++) {
     const dayStr = `2026-05-${day.toString().padStart(2, '0')}`;
     const isActive = state.selectedDate === dayStr ? 'active' : '';
@@ -815,27 +1039,54 @@ function selectDate(dateStr) {
   loadAppointmentsList();
 }
 
-// Load Appointments for selected date
-async function loadAppointmentsList() {
-  const listContainer = document.getElementById('appointments-list-container');
-  const appts = await db.appointments.where({ date: state.selectedDate }).toArray();
 
-  if (appts.length === 0) {
-    listContainer.innerHTML = '<p class="text-secondary text-center" style="padding:20px;">Geen afspraken gepland voor deze dag.</p>';
-    return;
+// Load Appointments for selected view
+async function loadAppointmentsList() {
+  const container = document.getElementById('schedule-right-column');
+  if (!container) return;
+
+  if (state.scheduleView === 'day') {
+    await renderDaySchedule(container);
+  } else {
+    await renderWeekSchedule(container);
+  }
+}
+
+// Render Day Schedule List
+async function renderDaySchedule(container) {
+  let appts = await db.appointments.where({ date: state.selectedDate }).toArray();
+
+  // Filter by doctor if selected
+  if (state.selectedDoctorUsername !== 'all') {
+    appts = appts.filter(a => a.doctorId === state.selectedDoctorUsername);
   }
 
   // Sort appts by time
   appts.sort((a, b) => a.time.localeCompare(b.time));
 
+  container.innerHTML = `
+    <div class="nm-card" style="margin:0;">
+      <div class="nm-card-header">
+        <h3 class="nm-card-title"><i class="fas fa-calendar-day"></i> Afspraken op ${formatDate(state.selectedDate)}</h3>
+      </div>
+      <div class="appointment-list" id="appointments-list-container">
+        <!-- Load appts -->
+      </div>
+    </div>
+  `;
+
+  const listContainer = document.getElementById('appointments-list-container');
+  if (appts.length === 0) {
+    listContainer.innerHTML = '<p class="text-secondary text-center" style="padding:20px;">Geen afspraken gepland voor deze dag.</p>';
+    return;
+  }
+
   // We need patient details for each appt
   const listItems = [];
   for (const appt of appts) {
     const patient = await db.patients.get(appt.patientId);
-    const timeSplit = appt.time.split(':');
     const dateMonth = new Date(state.selectedDate).toLocaleString('nl-NL', { month: 'short' });
     const dateDay = state.selectedDate.split('-')[2];
-
     const canDelete = hasPermission('schedule_appointment');
 
     listItems.push(`
@@ -861,6 +1112,105 @@ async function loadAppointmentsList() {
   listContainer.innerHTML = listItems.join('');
 }
 
+// Helper to calculate the 7 dates of the week for a given date
+function getWeekDates(dateStr) {
+  const current = new Date(dateStr);
+  const day = current.getDay();
+  // Map Sunday (0) to 7, Monday (1) to 1...
+  const dayNo = day === 0 ? 7 : day;
+  const monday = new Date(current);
+  monday.setDate(current.getDate() - (dayNo - 1));
+
+  const week = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    week.push(d.toISOString().split('T')[0]);
+  }
+  return week;
+}
+
+// Render Week Grid Schedule
+async function renderWeekSchedule(container) {
+  const weekDays = getWeekDates(state.selectedDate);
+  const startDay = weekDays[0];
+  const endDay = weekDays[6];
+
+  // Retrieve appointments in the range
+  let appts = await db.appointments.where('date').between(startDay, endDay, true, true).toArray();
+
+  // Filter by doctor if selected
+  if (state.selectedDoctorUsername !== 'all') {
+    appts = appts.filter(a => a.doctorId === state.selectedDoctorUsername);
+  }
+
+  // Group by date
+  const apptsByDate = {};
+  weekDays.forEach(d => {
+    apptsByDate[d] = [];
+  });
+  appts.forEach(a => {
+    if (apptsByDate[a.date]) {
+      apptsByDate[a.date].push(a);
+    }
+  });
+
+  const mondayFormatted = formatDate(startDay);
+  const sundayFormatted = formatDate(endDay);
+
+  container.innerHTML = `
+    <div class="nm-card" style="margin:0;">
+      <div class="nm-card-header">
+        <h3 class="nm-card-title"><i class="fas fa-calendar-week"></i> Weekoverzicht (${mondayFormatted} t/m ${sundayFormatted})</h3>
+      </div>
+      <div class="week-grid" id="week-appointments-grid">
+        <!-- Render columns for days -->
+      </div>
+    </div>
+  `;
+
+  const gridContainer = document.getElementById('week-appointments-grid');
+  const dayNames = ['Maandag', 'Dinsdag', 'Woensdag', 'Donderdag', 'Vrijdag', 'Zaterdag', 'Zondag'];
+  const todayStr = new Date().toISOString().split('T')[0];
+
+  const gridHtml = [];
+  for (let i = 0; i < 7; i++) {
+    const dateStr = weekDays[i];
+    const dayName = dayNames[i];
+    const dayAppts = apptsByDate[dateStr] || [];
+    dayAppts.sort((a, b) => a.time.localeCompare(b.time));
+
+    const isSelected = state.selectedDate === dateStr ? 'week-day-selected' : '';
+    const isToday = dateStr === todayStr ? 'week-day-today' : '';
+
+    const apptItemsHtml = [];
+    for (const appt of dayAppts) {
+      const patient = await db.patients.get(appt.patientId);
+      apptItemsHtml.push(`
+        <div class="week-appt-card" onclick="selectPatient(${appt.patientId})" title="Klik om patiëntdossier te openen">
+          <div class="week-appt-time">${appt.time}</div>
+          <div class="week-appt-patient">${patient ? patient.name : 'Onbekende patiënt'}</div>
+          <div class="week-appt-doctor">${appt.doctorName.split(' ').pop()}</div>
+        </div>
+      `);
+    }
+
+    gridHtml.push(`
+      <div class="week-day-col ${isSelected} ${isToday}">
+        <div class="week-day-header" onclick="selectDate('${dateStr}')" style="cursor:pointer; border-radius:8px; padding:4px; transition: background 0.2s;" onmouseover="this.style.background='rgba(0,122,140,0.05)'" onmouseout="this.style.background='transparent'">
+          <span class="week-day-name">${dayName}</span>
+          <span class="week-day-date">${dateStr.split('-')[2]}-${dateStr.split('-')[1]}</span>
+        </div>
+        <div class="week-day-body">
+          ${apptItemsHtml.length > 0 ? apptItemsHtml.join('') : '<div class="week-empty-text">Geen afspraken</div>'}
+        </div>
+      </div>
+    `);
+  }
+
+  gridContainer.innerHTML = gridHtml.join('');
+}
+
 // Cancel Appointment
 async function cancelAppointment(id) {
   if (confirm("Weet u zeker dat u deze afspraak wilt verwijderen?")) {
@@ -877,16 +1227,26 @@ async function cancelAppointment(id) {
 // 5. RECORDS VIEW (PHARMACY & LABS INDEX)
 // ==========================================
 async function renderRecords(container) {
+  const showAdminTabs = hasPermission('edit_users');
+  
+  if (!showAdminTabs && (state.recordsTab === 'users' || state.recordsTab === 'permissions')) {
+    state.recordsTab = 'pharmacy';
+  }
+
   container.innerHTML = `
     <h1 class="mb-4">Archieven & Beheer</h1>
     
     <div class="sub-tabs">
       <button class="sub-tab-btn ${state.recordsTab === 'pharmacy' ? 'active' : ''}" onclick="switchRecordsTab(this, 'pharmacy')">Apotheek & Voorraad</button>
       <button class="sub-tab-btn ${state.recordsTab === 'labs' ? 'active' : ''}" onclick="switchRecordsTab(this, 'labs')">Lab Rapportages</button>
+      ${showAdminTabs ? `
+        <button class="sub-tab-btn ${state.recordsTab === 'users' ? 'active' : ''}" onclick="switchRecordsTab(this, 'users')">Gebruikersbeheer</button>
+        <button class="sub-tab-btn ${state.recordsTab === 'permissions' ? 'active' : ''}" onclick="switchRecordsTab(this, 'permissions')">Rolrechten</button>
+      ` : ''}
     </div>
 
     <div id="records-tab-content">
-      <!-- Pharmacy or Labs renders here -->
+      <!-- Content renders dynamically -->
     </div>
   `;
 
@@ -908,6 +1268,10 @@ function renderRecordsTabContent() {
     showPharmacyInventory(contentDiv);
   } else if (state.recordsTab === 'labs') {
     showLabReportsIndex(contentDiv);
+  } else if (state.recordsTab === 'users') {
+    showUserManagement(contentDiv);
+  } else if (state.recordsTab === 'permissions') {
+    showRolePermissions(contentDiv);
   }
 }
 
@@ -961,6 +1325,7 @@ async function showPharmacyInventory(contentDiv) {
 
 function loadInventoryLines(inventory) {
   const tbody = document.getElementById('inventory-table-body');
+  if (!tbody) return;
   
   const canManage = hasPermission('manage_inventory');
 
@@ -968,10 +1333,10 @@ function loadInventoryLines(inventory) {
     const isLow = item.stock < 100 && item.isCritical;
     const badgeClass = item.isCritical ? 'nm-badge-danger' : 'nm-badge-primary';
     const badgeText = item.isCritical ? 'Kritiek' : 'Standaard';
-    const rowAlertStyle = isLow ? 'style="background-color:rgba(231,76,60,0.02);"' : '';
+    const rowAlertStyle = isLow ? 'background-color:rgba(231,76,60,0.02);' : '';
 
     return `
-      <tr ${rowAlertStyle}>
+      <tr class="clickable-row" onclick="openMedicationDetailModal('${item.medicationName}')" style="${rowAlertStyle} cursor:pointer;">
         <td>
           <strong>${item.medicationName}</strong>
           ${isLow ? `<br><span style="color:var(--accent-red); font-size:11px; font-weight:700;"><i class="fas fa-exclamation-triangle"></i> Lage voorraad!</span>` : ''}
@@ -979,9 +1344,9 @@ function loadInventoryLines(inventory) {
         <td>${item.location}</td>
         <td>
           <div class="stock-control">
-            ${canManage ? `<button class="nm-btn" style="padding:4px 8px; font-size:11px;" onclick="adjustStock(${item.id}, -10)">-10</button>` : ''}
+            ${canManage ? `<button class="nm-btn" style="padding:4px 8px; font-size:11px;" onclick="event.stopPropagation(); adjustStock(${item.id}, -10)">-10</button>` : ''}
             <span class="stock-num ${isLow ? 'text-accent-red' : ''}">${item.stock}</span>
-            ${canManage ? `<button class="nm-btn" style="padding:4px 8px; font-size:11px;" onclick="adjustStock(${item.id}, 10)">+10</button>` : ''}
+            ${canManage ? `<button class="nm-btn" style="padding:4px 8px; font-size:11px;" onclick="event.stopPropagation(); adjustStock(${item.id}, 10)">+10</button>` : ''}
           </div>
         </td>
         <td>
@@ -995,6 +1360,216 @@ function loadInventoryLines(inventory) {
     `;
   }).join('');
 }
+
+// Medication Detail Modal with stock locations, batches, prescribed patients list, and historical usage chart
+async function openMedicationDetailModal(medicationName) {
+  const items = await db.inventory.where({ medicationName }).toArray();
+  if (items.length === 0) return;
+
+  const isCritical = items[0].isCritical;
+  const totalStock = items.reduce((sum, item) => sum + item.stock, 0);
+  const unit = items[0].unit || 'stuks';
+
+  // Find prescribed patients
+  const prescribedPatients = [];
+  const allDossiers = await db.dossiers.toArray();
+  for (const d of allDossiers) {
+    const activeMed = d.medications && d.medications.find(m => 
+      m.name.toLowerCase().trim() === medicationName.toLowerCase().trim() && m.status === 'Actief'
+    );
+    if (activeMed) {
+      const patient = await db.patients.get(d.patientId);
+      if (patient) {
+        prescribedPatients.push({
+          patient,
+          dosage: activeMed.dosage,
+          frequency: activeMed.frequency,
+          prescribedBy: activeMed.prescribedBy
+        });
+      }
+    }
+  }
+
+  const modal = document.createElement('div');
+  modal.id = 'active-modal-overlay';
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal-content" style="max-width: 750px; width: 100%;">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" style="display:flex; align-items:center; gap:8px;">
+            <i class="fas fa-pills" style="color:var(--primary-color);"></i>
+            ${medicationName}
+          </h3>
+          <span class="nm-badge ${isCritical ? 'nm-badge-danger' : 'nm-badge-primary'}" style="margin-top:6px;">
+            ${isCritical ? 'Kritiek Geneesmiddel' : 'Standaard Geneesmiddel'}
+          </span>
+        </div>
+        <button class="modal-close-btn" onclick="closeActiveModal()"><i class="fas fa-times"></i></button>
+      </div>
+
+      <div class="grid-2" style="margin-bottom: 20px;">
+        <!-- Left Column: Details & Stock -->
+        <div>
+          <div class="nm-card" style="box-shadow: var(--shadow-small-pressed); margin:0; padding:16px; margin-bottom:16px;">
+            <h4 style="font-size:12px; text-transform:uppercase; color:var(--text-secondary); margin-bottom:10px;">Voorraadinformatie</h4>
+            <div style="font-size:24px; font-weight:800; color:var(--primary-color); margin-bottom:12px;">
+              ${totalStock} <span style="font-size:14px; font-weight:600; color:var(--text-color);">${unit}</span>
+            </div>
+            
+            <div style="display:flex; flex-direction:column; gap:8px; font-size:13px;">
+              ${items.map(item => `
+                <div style="display:flex; justify-content:space-between; border-bottom:1px dashed rgba(184,191,201,0.2); padding-bottom:4px;">
+                  <span style="font-weight:600;">${item.location}:</span>
+                  <span style="font-weight:800;">${item.stock} ${unit}</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+
+          <div class="nm-card" style="box-shadow: var(--shadow-small-pressed); margin:0; padding:16px;">
+            <h4 style="font-size:12px; text-transform:uppercase; color:var(--text-secondary); margin-bottom:10px;">Batch- & Expiratieregistratie</h4>
+            <table style="width:100%; border-collapse:collapse; font-size:11px;">
+              <thead>
+                <tr style="border-bottom:1px solid rgba(184,191,201,0.3); text-align:left;">
+                  <th style="padding:4px 0; color:var(--text-secondary);">Batch</th>
+                  <th style="padding:4px 0; color:var(--text-secondary);">Locatie</th>
+                  <th style="padding:4px 0; color:var(--text-secondary);">Verval</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${items.map(item => `
+                  <tr style="border-bottom:1px solid rgba(184,191,201,0.1);">
+                    <td style="padding:6px 0; font-family:monospace; font-weight:700;">${item.batchNumber}</td>
+                    <td style="padding:6px 0;">${item.location}</td>
+                    <td style="padding:6px 0;">${formatDate(item.expiryDate)}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Right Column: Graph -->
+        <div>
+          <div class="nm-card" style="box-shadow: var(--shadow-small-pressed); margin:0; padding:16px; height:100%; display:flex; flex-direction:column;">
+            <h4 style="font-size:12px; text-transform:uppercase; color:var(--text-secondary); margin-bottom:10px;">Verbruikstrend (Afgelopen 6 Mnd)</h4>
+            <div style="flex:1; min-height:180px; position:relative;">
+              <canvas id="medication-detail-chart" style="width:100%; height:100%;"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom Row: Prescribed Patients -->
+      <div class="nm-card" style="box-shadow: var(--shadow-small-pressed); margin:0; padding:16px;">
+        <h4 style="font-size:12px; text-transform:uppercase; color:var(--text-secondary); margin-bottom:10px;">
+          Actieve Patiënten op dit Geneesmiddel (${prescribedPatients.length})
+        </h4>
+        
+        ${prescribedPatients.length > 0 ? `
+          <div style="max-height:180px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; padding-right:5px;">
+            ${prescribedPatients.map(entry => `
+              <div class="nm-card" style="box-shadow:var(--shadow-small); margin:0; padding:10px; display:flex; justify-content:space-between; align-items:center; font-size:12px;">
+                <div>
+                  <a href="#" style="font-weight:700; color:var(--primary-color); text-decoration:none;" onclick="event.preventDefault(); goToPatientEpd(${entry.patient.id})">
+                    <i class="fas fa-external-link-alt"></i> ${entry.patient.name}
+                  </a>
+                  <span style="color:var(--text-secondary); margin-left:8px;">BSN: ${entry.patient.bsn}</span>
+                  <div style="margin-top:2px; font-size:11px;">Dosering: <strong>${entry.dosage}</strong> | Schema: <strong>${entry.frequency}</strong></div>
+                </div>
+                <div style="font-size:10px; color:var(--text-secondary); text-align:right;">
+                  Voorgeschreven door:<br><strong>${entry.prescribedBy}</strong>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        ` : `
+          <p class="text-secondary text-center" style="font-size:12px; padding:10px;">
+            Er zijn momenteel geen actieve patiënten ingesteld op dit medicament.
+          </p>
+        `}
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="nm-btn nm-btn-primary" onclick="closeActiveModal()">Sluiten</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  // Helper function to link straight to Patient EPD
+  window.goToPatientEpd = (id) => {
+    closeActiveModal();
+    selectPatient(id);
+    navigateTo('patients');
+  };
+
+  // Render chart
+  setTimeout(() => {
+    const canvas = document.getElementById('medication-detail-chart');
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    
+    // Simulate some monthly consumption data based on total stock and criticality
+    let baseConsumption = isCritical ? 60 : 250;
+    const labels = ['Dec', 'Jan', 'Feb', 'Mrt', 'Apr', 'Mei'];
+    const consumptionData = labels.map((l, idx) => {
+      const randomMultiplier = 0.8 + Math.random() * 0.4;
+      return Math.round(baseConsumption * randomMultiplier);
+    });
+
+    new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Uitgegeven eenheden',
+          data: consumptionData,
+          backgroundColor: 'rgba(0, 122, 140, 0.1)',
+          borderColor: '#007a8c',
+          borderWidth: 2.5,
+          tension: 0.35,
+          fill: true,
+          pointBackgroundColor: '#007a8c',
+          pointRadius: 4
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            display: false
+          }
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            grid: {
+              color: 'rgba(184, 191, 201, 0.15)'
+            },
+            ticks: {
+              color: '#7f8c8d',
+              font: { size: 10 }
+            }
+          },
+          x: {
+            grid: {
+              display: false
+            },
+            ticks: {
+              color: '#7f8c8d',
+              font: { size: 10, weight: 'bold' }
+            }
+          }
+        }
+      }
+    });
+  }, 100);
+}
+
 
 async function adjustStock(itemId, amt) {
   const item = await db.inventory.get(itemId);
@@ -1088,37 +1663,431 @@ async function showLabReportsIndex(contentDiv) {
 
   contentDiv.innerHTML = `
     <div class="nm-card">
-      <div class="nm-card-header">
-        <h3 class="nm-card-title"><i class="fas fa-file-invoice"></i> Alle Laboratoriumrapporten</h3>
+      <div class="nm-card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; border-bottom:1px dashed rgba(184, 191, 201, 0.3); padding-bottom:10px; margin-bottom:16px;">
+        <h3 class="nm-card-title" style="margin:0;"><i class="fas fa-file-invoice"></i> Alle Laboratoriumrapporten</h3>
+        <div style="width: 260px;">
+          <input type="text" id="lab-reports-search" class="nm-input" placeholder="Zoek rapport of patiënt..." style="padding:8px 12px; font-size:13px;">
+        </div>
       </div>
-      <div style="display:flex; flex-direction:column; gap:12px;">
-        ${labReports.length > 0 ? '' : '<p class="text-secondary text-center">Geen labrapporten in database.</p>'}
+      <div style="display:flex; flex-direction:column; gap:12px;" id="lab-reports-list-container">
+        <!-- Rendered dynamically -->
       </div>
     </div>
   `;
 
-  const innerDiv = contentDiv.querySelector('.nm-card > div');
-  
-  // We need to query client name for each lab report
-  const elements = [];
-  for (const report of labReports) {
-    const patient = await db.patients.get(report.patientId);
-    elements.push(`
-      <div class="nm-card" style="box-shadow:var(--shadow-small); margin:0; padding:16px; display:flex; justify-content:between; align-items:center;">
-        <div>
-          <strong style="font-size:15px;">${report.testName}</strong><br>
-          <span style="font-size:13px; color:var(--text-secondary);">
-            Patiënt: <strong>${patient ? patient.name : 'Onbekend'}</strong> | Datum: ${formatDate(report.testDate)}
-          </span>
+  const listContainer = document.getElementById('lab-reports-list-container');
+
+  // Pre-load patients map
+  const patientsMap = {};
+  const patients = await db.patients.toArray();
+  patients.forEach(p => {
+    patientsMap[p.id] = p;
+  });
+
+  const renderLabList = (query = '') => {
+    const q = query.toLowerCase().trim();
+    
+    // Filter reports
+    const filteredReports = labReports.filter(report => {
+      const patient = patientsMap[report.patientId];
+      const patientName = patient ? patient.name.toLowerCase() : '';
+      const testName = report.testName.toLowerCase();
+      const status = report.status.toLowerCase();
+      
+      return testName.includes(q) || patientName.includes(q) || status.includes(q);
+    });
+
+    if (filteredReports.length === 0) {
+      listContainer.innerHTML = '<p class="text-secondary text-center" style="padding:20px;">Geen laboratoriumrapporten gevonden.</p>';
+      return;
+    }
+
+    listContainer.innerHTML = filteredReports.map(report => {
+      const patient = patientsMap[report.patientId];
+      return `
+        <div class="nm-card" style="box-shadow:var(--shadow-small); margin:0; padding:16px; display:flex; justify-content:between; align-items:center; flex-wrap:wrap; gap:12px;">
+          <div>
+            <strong style="font-size:15px; color:var(--text-color);">${report.testName}</strong><br>
+            <span style="font-size:13px; color:var(--text-secondary);">
+              Patiënt: <strong>${patient ? patient.name : 'Onbekend'}</strong> | Datum: ${formatDate(report.testDate)}
+            </span>
+          </div>
+          <div style="display:flex; align-items:center; gap:12px;">
+            <span class="nm-badge ${report.status === 'Definitief' ? 'nm-badge-success' : 'nm-badge-warning'}">${report.status}</span>
+            ${canView ? `<button class="nm-btn" style="padding:6px 12px;" onclick="viewLabReport(${report.id})"><i class="fas fa-file-pdf"></i> Bekijken</button>` : ''}
+          </div>
         </div>
-        <div style="display:flex; align-items:center; gap:12px;">
-          <span class="nm-badge nm-badge-success">${report.status}</span>
-          ${canView ? `<button class="nm-btn" style="padding:6px 12px;" onclick="viewLabReport(${report.id})"><i class="fas fa-file-pdf"></i> Bekijken</button>` : ''}
+      `;
+    }).join('');
+  };
+
+  // Initial render
+  renderLabList();
+
+  // Add event listener to search input
+  document.getElementById('lab-reports-search').addEventListener('input', (e) => {
+    renderLabList(e.target.value);
+  });
+}
+
+// Tab 5.3: User Management UI
+async function showUserManagement(contentDiv) {
+  const users = await db.users.toArray();
+
+  contentDiv.innerHTML = `
+    <div class="nm-card">
+      <div class="nm-card-header">
+        <h3 class="nm-card-title"><i class="fas fa-users-cog"></i> Gebruikersbeheer</h3>
+        <button class="nm-btn nm-btn-primary" style="padding:8px 16px; font-size:12px;" onclick="openAddUserModal()">
+          <i class="fas fa-user-plus"></i> Gebruiker toevoegen
+        </button>
+      </div>
+      
+      <table class="inventory-table">
+        <thead>
+          <tr>
+            <th>Volledige Naam</th>
+            <th>Gebruikersnaam</th>
+            <th>Rol</th>
+            <th>Specialisme / Afdeling</th>
+            <th style="text-align:right;">Acties</th>
+          </tr>
+        </thead>
+        <tbody id="users-table-body">
+          <!-- Loaded dynamically -->
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  const tbody = document.getElementById('users-table-body');
+  tbody.innerHTML = users.map(u => `
+    <tr>
+      <td><strong>${u.name}</strong></td>
+      <td><span style="font-family:monospace;">${u.username}</span></td>
+      <td><span class="nm-badge ${u.role === ROLES.SUPERUSER ? 'nm-badge-danger' : 'nm-badge-primary'}">${u.role}</span></td>
+      <td>${u.specialty || '-'}</td>
+      <td style="text-align:right;">
+        <div style="display:flex; justify-content:flex-end; gap:8px;">
+          <button class="nm-btn" style="padding:6px 10px; font-size:11px;" onclick="openEditUserModal(${u.id})">
+            <i class="fas fa-edit"></i> Bewerken
+          </button>
+          <button class="nm-btn" style="padding:6px 10px; font-size:11px; color:var(--accent-red);" onclick="deleteUser(${u.id}, '${u.username}')">
+            <i class="fas fa-trash-alt"></i> Verwijderen
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// User CRUD Modal: ADD USER
+function openAddUserModal() {
+  const modal = document.createElement('div');
+  modal.id = 'active-modal-overlay';
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title">Nieuwe Gebruiker Registreren</h3>
+        <button class="modal-close-btn" onclick="closeActiveModal()"><i class="fas fa-times"></i></button>
+      </div>
+      <form id="add-user-form">
+        <div class="form-group">
+          <label class="form-label">Gebruikersnaam</label>
+          <input type="text" name="username" class="nm-input" required placeholder="Bijv. j_jansen">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Wachtwoord</label>
+          <input type="password" name="password" class="nm-input" required placeholder="Wachtwoord">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Volledige Naam</label>
+          <input type="text" name="name" class="nm-input" required placeholder="Bijv. Dr. Jan Jansen">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Rol</label>
+          <select name="role" class="nm-select" required>
+            <option value="Superuser">Superuser (Beheerder)</option>
+            <option value="Dokter">Dokter</option>
+            <option value="Apotheker">Apotheker</option>
+            <option value="Verpleegkundige">Verpleegkundige</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Specialisme / Afdeling</label>
+          <input type="text" name="specialty" class="nm-input" placeholder="Bijv. Cardiologie of Centraal">
+        </div>
+        
+        <div class="modal-actions">
+          <button type="button" class="nm-btn" onclick="closeActiveModal()">Annuleren</button>
+          <button type="submit" class="nm-btn nm-btn-primary">Registreren</button>
+        </div>
+      </form>
+    </div>
+  `;
+  
+  document.body.appendChild(modal);
+
+  document.getElementById('add-user-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const username = formData.get('username').toLowerCase().trim();
+
+    // Check unique username
+    const existing = await db.users.where({ username }).first();
+    if (existing) {
+      alert("Deze gebruikersnaam is al in gebruik.");
+      return;
+    }
+
+    const newUser = {
+      username: username,
+      password: formData.get('password'),
+      name: formData.get('name'),
+      role: formData.get('role'),
+      specialty: formData.get('specialty') || ""
+    };
+
+    await db.users.add(newUser);
+    await logAction(state.currentUser.username, "ADD_USER", `Nieuwe gebruiker aangemaakt: ${newUser.username} met rol ${newUser.role}`);
+    
+    closeActiveModal();
+    // Refresh user lists
+    await setupHeader();
+    renderRecordsTabContent();
+  });
+}
+
+// User CRUD Modal: EDIT USER
+async function openEditUserModal(userId) {
+  const user = await db.users.get(userId);
+  if (!user) return;
+
+  const modal = document.createElement('div');
+  modal.id = 'active-modal-overlay';
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title">Gebruiker Bewerken</h3>
+        <button class="modal-close-btn" onclick="closeActiveModal()"><i class="fas fa-times"></i></button>
+      </div>
+      <form id="edit-user-form">
+        <div class="form-group">
+          <label class="form-label">Gebruikersnaam</label>
+          <input type="text" class="nm-input" value="${user.username}" disabled style="opacity:0.6; cursor:not-allowed;">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Nieuw Wachtwoord (leeglaten om te behouden)</label>
+          <input type="password" name="password" class="nm-input" placeholder="Wachtwoord wijzigen">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Volledige Naam</label>
+          <input type="text" name="name" class="nm-input" value="${user.name}" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Rol</label>
+          <select name="role" class="nm-select" required ${user.username === 'admin' ? 'disabled' : ''}>
+            <option value="Superuser" ${user.role === 'Superuser' ? 'selected' : ''}>Superuser (Beheerder)</option>
+            <option value="Dokter" ${user.role === 'Dokter' ? 'selected' : ''}>Dokter</option>
+            <option value="Apotheker" ${user.role === 'Apotheker' ? 'selected' : ''}>Apotheker</option>
+            <option value="Verpleegkundige" ${user.role === 'Verpleegkundige' ? 'selected' : ''}>Verpleegkundige</option>
+          </select>
+          ${user.username === 'admin' ? '<input type="hidden" name="role" value="Superuser">' : ''}
+        </div>
+        <div class="form-group">
+          <label class="form-label">Specialisme / Afdeling</label>
+          <input type="text" name="specialty" class="nm-input" value="${user.specialty || ''}">
+        </div>
+        
+        <div class="modal-actions">
+          <button type="button" class="nm-btn" onclick="closeActiveModal()">Annuleren</button>
+          <button type="submit" class="nm-btn nm-btn-primary">Opslaan</button>
+        </div>
+      </form>
+    </div>
+  `;
+  
+  document.body.appendChild(modal);
+
+  document.getElementById('edit-user-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const password = formData.get('password');
+    
+    const updates = {
+      name: formData.get('name'),
+      role: formData.get('role'),
+      specialty: formData.get('specialty') || ""
+    };
+
+    if (password && password.trim() !== "") {
+      updates.password = password;
+    }
+
+    await db.users.update(userId, updates);
+    await logAction(state.currentUser.username, "EDIT_USER", `Gebruiker ${user.username} bijgewerkt.`);
+    
+    if (state.currentUser.id === userId) {
+      state.currentUser = await db.users.get(userId);
+    }
+
+    closeActiveModal();
+    await setupHeader();
+    renderRecordsTabContent();
+  });
+}
+
+// User CRUD: DELETE USER
+async function deleteUser(userId, username) {
+  if (username === 'admin') {
+    alert("De hoofdbeheerder (admin) kan niet worden verwijderd.");
+    return;
+  }
+  if (state.currentUser.username === username) {
+    alert("U kunt uw eigen actieve gebruiker niet verwijderen.");
+    return;
+  }
+
+  if (confirm(`Weet u zeker dat u de gebruiker '${username}' wilt verwijderen?`)) {
+    await db.users.delete(userId);
+    await logAction(state.currentUser.username, "DELETE_USER", `Gebruiker ${username} verwijderd.`);
+    
+    await setupHeader();
+    renderRecordsTabContent();
+  }
+}
+
+// Tab 5.4: Role Permissions Management Matrix
+function showRolePermissions(contentDiv) {
+  const rolesList = Object.values(ROLES);
+  
+  const permissionLabels = {
+    view_dashboard: { title: "Dashboard Bekijken", desc: "Toegang tot het centrale dashboard en recent activiteitenlog." },
+    view_patients: { title: "Patiëntenoverzicht", desc: "Lijst met patiënten inzien en zoeken." },
+    view_schedule: { title: "Planning & Kalender", desc: "Agenda en afsprakenoverzichten inzien." },
+    view_records: { title: "Archieven & Beheer", desc: "Voorraadbeheer, lab-rapporten en beheer-tabs bekijken." },
+    edit_users: { title: "Gebruikers- & Machtigingenbeheer", desc: "Gebruikers beheren en permissiematrix wijzigen (Superuser restrictie)." },
+    add_patient: { title: "Patiënt Toevoegen", desc: "Nieuwe patiëntendossiers aanmaken." },
+    edit_dossier: { title: "Medisch Dossier Bewerken", desc: "Medicatie voorschrijven, diagnoses toevoegen, behandeltrajecten starten." },
+    add_visit: { title: "Consult Registreren", desc: "Consultverslagen en onderzoeksbevindingen invoeren." },
+    schedule_appointment: { title: "Afspraak Inplannen", desc: "Nieuwe afspraken plannen en bestaande annuleren." },
+    manage_inventory: { title: "Medicatievoorraad Wijzigen", desc: "Medicijnvoorraad aanpassen (+10/-10) in de apotheek." },
+    view_lab_details: { title: "Labrapport Inzien", desc: "Gedetailleerde lab-uitslagen/PDF bekijken." },
+    view_pharmacy_details: { title: "Pharmacy Details Inzien", desc: "Specifieke verbruiks- en monitoringgrafieken inzien." }
+  };
+
+  const rows = Object.keys(permissionLabels).map(key => {
+    const perm = permissionLabels[key];
+    const isLockedForSuperuser = key === 'edit_users';
+
+    const cols = rolesList.map(role => {
+      const isChecked = PERMISSIONS[key] && PERMISSIONS[key].includes(role);
+      const disabledAttr = (isLockedForSuperuser && role === ROLES.SUPERUSER) ? 'disabled checked' : '';
+      return `
+        <td style="text-align:center;">
+          <label class="matrix-checkbox-container">
+            <input type="checkbox" class="perm-checkbox" data-permission="${key}" data-role="${role}" ${isChecked ? 'checked' : ''} ${disabledAttr}>
+            <span class="checkmark"></span>
+          </label>
+        </td>
+      `;
+    }).join('');
+
+    return `
+      <tr>
+        <td style="padding:12px 8px;">
+          <div style="font-weight:700; font-size:14px; color:var(--text-color);">${perm.title}</div>
+          <div style="font-size:11.5px; color:var(--text-secondary); margin-top:2px;">${perm.desc}</div>
+        </td>
+        ${cols}
+      </tr>
+    `;
+  }).join('');
+
+  contentDiv.innerHTML = `
+    <div class="nm-card">
+      <div class="nm-card-header">
+        <h3 class="nm-card-title"><i class="fas fa-user-shield"></i> Toegangsbeheer & Rolrechten</h3>
+        <div style="display:flex; gap:12px;">
+          <button class="nm-btn" onclick="resetPermissionsToDefault()">
+            <i class="fas fa-undo"></i> Standaard Herstellen
+          </button>
+          <button class="nm-btn nm-btn-primary" onclick="savePermissionsMatrix()">
+            <i class="fas fa-save"></i> Wijzigingen Opslaan
+          </button>
         </div>
       </div>
-    `);
+      
+      <p style="font-size:13px; color:var(--text-secondary); margin-bottom:20px;">
+        Vink hieronder aan welke klinische rollen toegang hebben tot specifieke schermen en acties. 
+        De wijzigingen zijn direct actief na het opslaan.
+      </p>
+
+      <table class="inventory-table permissions-matrix-table">
+        <thead>
+          <tr>
+            <th>Functionaliteit / Actie</th>
+            ${rolesList.map(role => `<th style="text-align:center;">${role}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function savePermissionsMatrix() {
+  const newPermissions = {};
+  
+  document.querySelectorAll('.perm-checkbox').forEach(cb => {
+    const permKey = cb.getAttribute('data-permission');
+    if (!newPermissions[permKey]) {
+      newPermissions[permKey] = [];
+    }
+  });
+
+  document.querySelectorAll('.perm-checkbox').forEach(cb => {
+    const permKey = cb.getAttribute('data-permission');
+    const role = cb.getAttribute('data-role');
+    if (cb.checked) {
+      newPermissions[permKey].push(role);
+    }
+  });
+
+  if (!newPermissions.edit_users.includes(ROLES.SUPERUSER)) {
+    newPermissions.edit_users.push(ROLES.SUPERUSER);
   }
-  innerDiv.innerHTML = elements.join('');
+
+  localStorage.setItem('medcore_zis_permissions', JSON.stringify(newPermissions));
+  PERMISSIONS = newPermissions;
+
+  logAction(state.currentUser.username, "SAVE_PERMISSIONS", "Toegangsrechten matrix bijgewerkt.");
+  alert("Machtigingen succesvol opgeslagen! De UI is bijgewerkt.");
+
+  updateNavigationVisibility();
+
+  const currentTabBtn = document.querySelector(`.nav-item[data-view="${state.activeView}"]`);
+  if (currentTabBtn && currentTabBtn.classList.contains('d-none')) {
+    navigateTo('dashboard');
+  } else {
+    navigateTo(state.activeView);
+  }
+}
+
+function resetPermissionsToDefault() {
+  if (confirm("Weet u zeker dat u alle machtigingen wilt herstellen naar de standaardwaarden?")) {
+    localStorage.removeItem('medcore_zis_permissions');
+    loadPermissions();
+    logAction(state.currentUser.username, "RESET_PERMISSIONS", "Machtigingen hersteld naar standaardwaarden.");
+    alert("Machtigingen hersteld naar standaardwaarden!");
+    
+    renderRecordsTabContent();
+    updateNavigationVisibility();
+  }
 }
 
 // ==========================================
@@ -1501,8 +2470,10 @@ function openAddTreatmentModal() {
 }
 
 // MODAL 6: ADD VISIT (CONSULT REGISTRATION)
-function openAddVisitModal() {
+async function openAddVisitModal() {
   const patientId = state.selectedPatientId;
+  const inventoryItems = await db.inventory.toArray();
+  const medNames = [...new Set(inventoryItems.map(i => i.medicationName))];
 
   const modal = document.createElement('div');
   modal.id = 'active-modal-overlay';
@@ -1524,11 +2495,69 @@ function openAddVisitModal() {
         </div>
         <div class="form-group">
           <label class="form-label">Werkdiagnose</label>
-          <input type="text" name="diagnosis" class="nm-input" required placeholder="Bijv. Milde hypertensie">
+          <input type="text" id="consult-diagnosis-input" name="diagnosis" class="nm-input" required placeholder="Bijv. Milde hypertensie" oninput="syncDiagnosisOmschrijving(this.value)">
         </div>
         <div class="form-group">
           <label class="form-label">Behandelplan / Advies (Nota's)</label>
           <textarea name="notes" class="nm-textarea" placeholder="Medicatie-aanpassing, rustadvies, vervolgafspraak..."></textarea>
+        </div>
+
+        <!-- Integrated EPD additions section -->
+        <div class="nm-card" style="box-shadow:var(--shadow-small-pressed); margin-bottom:16px; padding:16px;">
+          <h4 style="font-size:13px; margin-bottom:12px; color:var(--primary-color);"><i class="fas fa-network-wired"></i> Geïntegreerde Acties</h4>
+          
+          <!-- Add Diagnosis Checkbox -->
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+            <label class="matrix-checkbox-container" style="width:20px; height:20px;">
+              <input type="checkbox" id="chk-add-to-epd" name="chkAddToEpd" onchange="toggleConsultSection('epd-additions-section', this.checked)">
+              <span class="checkmark" style="width:20px; height:20px; border-radius:4px;"></span>
+            </label>
+            <span style="font-size:13px; font-weight:700;">Voeg diagnose toe aan EPD</span>
+          </div>
+          
+          <!-- Conditional Diagnosis Fields -->
+          <div id="epd-additions-section" style="display:none; padding-left:28px; margin-bottom:16px;">
+            <div class="grid-2" style="margin-bottom:0; gap:12px;">
+              <div class="form-group" style="margin-bottom:0;">
+                <label class="form-label">ICD-10 Code</label>
+                <input type="text" name="epdIcdCode" class="nm-input" placeholder="Bijv. I10">
+              </div>
+              <div class="form-group" style="margin-bottom:0;">
+                <label class="form-label">Diagnose Omschrijving</label>
+                <input type="text" id="epd-diagnosis-name" name="epdDiagnosisName" class="nm-input" placeholder="Bijv. Essentiële hypertensie">
+              </div>
+            </div>
+          </div>
+
+          <!-- Prescribe Checkbox -->
+          <div style="display:flex; align-items:center; gap:8px;">
+            <label class="matrix-checkbox-container" style="width:20px; height:20px;">
+              <input type="checkbox" id="chk-prescribe-now" name="chkPrescribeNow" onchange="toggleConsultSection('prescribe-additions-section', this.checked)">
+              <span class="checkmark" style="width:20px; height:20px; border-radius:4px;"></span>
+            </label>
+            <span style="font-size:13px; font-weight:700;">Schrijf direct medicatie voor</span>
+          </div>
+
+          <!-- Conditional Prescribe Fields -->
+          <div id="prescribe-additions-section" style="display:none; padding-left:28px; margin-top:10px;">
+            <div class="form-group">
+              <label class="form-label">Medicament</label>
+              <select name="prescribeMedName" class="nm-select">
+                ${medNames.map(m => `<option value="${m}">${m}</option>`).join('')}
+              </select>
+            </div>
+            <div class="grid-2" style="margin-bottom:0; gap:12px;">
+              <div class="form-group" style="margin-bottom:0;">
+                <label class="form-label">Dosering</label>
+                <input type="text" name="prescribeDosage" class="nm-input" placeholder="Bijv. 1 tablet (5mg)">
+              </div>
+              <div class="form-group" style="margin-bottom:0;">
+                <label class="form-label">Frequentie / Schema</label>
+                <input type="text" name="prescribeFrequency" class="nm-input" placeholder="Bijv. 1x per dag (ochtend)">
+              </div>
+            </div>
+          </div>
+
         </div>
 
         <div class="modal-actions">
@@ -1540,22 +2569,90 @@ function openAddVisitModal() {
   `;
   document.body.appendChild(modal);
 
+  // Setup inline helpers
+  window.toggleConsultSection = (sectionId, visible) => {
+    const el = document.getElementById(sectionId);
+    if (el) el.style.display = visible ? 'block' : 'none';
+  };
+
+  window.syncDiagnosisOmschrijving = (val) => {
+    const epdDiagInput = document.getElementById('epd-diagnosis-name');
+    if (epdDiagInput) {
+      epdDiagInput.value = val;
+    }
+  };
+
   document.getElementById('add-visit-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const formData = new FormData(e.target);
+
+    const complaints = formData.get('complaints');
+    const findings = formData.get('findings');
+    const diagnosis = formData.get('diagnosis');
+    const notes = formData.get('notes');
 
     const newVisit = {
       patientId: patientId,
       date: new Date().toISOString().split('T')[0],
       doctorName: state.currentUser.name,
-      complaints: formData.get('complaints'),
-      findings: formData.get('findings'),
-      diagnosis: formData.get('diagnosis'),
-      notes: formData.get('notes')
+      complaints,
+      findings,
+      diagnosis,
+      notes
     };
 
+    // Save Visit
     await db.visits.add(newVisit);
     await logAction(state.currentUser.username, "ADD_VISIT", `Consult geregistreerd door ${state.currentUser.name} voor patiënt ID ${patientId}.`);
+
+    // Check integrated actions
+    const chkAddToEpd = document.getElementById('chk-add-to-epd').checked;
+    const chkPrescribeNow = document.getElementById('chk-prescribe-now').checked;
+
+    const dossier = await db.dossiers.where({ patientId }).first();
+
+    if (dossier) {
+      const updates = {};
+
+      if (chkAddToEpd) {
+        const code = formData.get('epdIcdCode') || "ONBEKEND";
+        const name = formData.get('epdDiagnosisName') || diagnosis;
+        const newDiag = {
+          code: code.toUpperCase().trim(),
+          name: name.trim(),
+          date: new Date().toISOString().split('T')[0],
+          status: "Actief"
+        };
+        const currentDiagnoses = dossier.diagnoses || [];
+        currentDiagnoses.push(newDiag);
+        updates.diagnoses = currentDiagnoses;
+
+        await logAction(state.currentUser.username, "ADD_DIAGNOSIS", `Diagnosis automatisch toegevoegd via consult: ${newDiag.name} (${newDiag.code})`);
+      }
+
+      if (chkPrescribeNow) {
+        const medName = formData.get('prescribeMedName');
+        const dosage = formData.get('prescribeDosage') || "Volgens voorschrift";
+        const frequency = formData.get('prescribeFrequency') || "Zo nodig";
+        const newMed = {
+          name: medName,
+          dosage: dosage.trim(),
+          frequency: frequency.trim(),
+          prescribedBy: state.currentUser.name,
+          startDate: new Date().toISOString().split('T')[0],
+          status: "Actief"
+        };
+        const currentMeds = dossier.medications || [];
+        currentMeds.push(newMed);
+        updates.medications = currentMeds;
+
+        await logAction(state.currentUser.username, "PRESCRIBE_MEDICATION", `Medicatie automatisch voorgeschreven via consult: ${medName}`);
+      }
+
+      if (Object.keys(updates).length > 0) {
+        await db.dossiers.update(dossier.id, updates);
+      }
+    }
 
     closeActiveModal();
     
@@ -1576,6 +2673,9 @@ function closeActiveModal() {
 }
 window.closeActiveModal = closeActiveModal;
 window.closePdfViewer = closePdfViewer;
+window.openMedicationDetailModal = openMedicationDetailModal;
+window.goToPatientEpd = goToPatientEpd;
+window.switchScheduleView = switchScheduleView;
 window.switchPatientTab = switchPatientTab;
 window.switchRecordsTab = switchRecordsTab;
 window.adjustStock = adjustStock;
@@ -1583,3 +2683,8 @@ window.viewLabReport = viewLabReport;
 window.selectPatient = selectPatient;
 window.selectDate = selectDate;
 window.cancelAppointment = cancelAppointment;
+window.openAddUserModal = openAddUserModal;
+window.openEditUserModal = openEditUserModal;
+window.deleteUser = deleteUser;
+window.savePermissionsMatrix = savePermissionsMatrix;
+window.resetPermissionsToDefault = resetPermissionsToDefault;

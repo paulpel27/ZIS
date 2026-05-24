@@ -1104,3 +1104,385 @@ body {
   font-size: 11px;
   font-weight: 700;
 }
+
+/* Neumorphic Matrix Checkboxes */
+.matrix-checkbox-container {
+  display: inline-block;
+  position: relative;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.matrix-checkbox-container input {
+  position: absolute;
+  opacity: 0;
+  cursor: pointer;
+  height: 0;
+  width: 0;
+}
+
+.matrix-checkbox-container .checkmark {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 24px;
+  width: 24px;
+  background-color: var(--surface-color);
+  border-radius: 6px;
+  box-shadow: var(--shadow-small);
+  transition: all var(--transition-speed) ease;
+}
+
+.matrix-checkbox-container:hover input ~ .checkmark {
+  box-shadow: -4px -4px 8px var(--shadow-light), 4px 4px 8px var(--shadow-dark);
+}
+
+.matrix-checkbox-container input:checked ~ .checkmark {
+  box-shadow: var(--shadow-small-pressed);
+  background-color: rgba(0, 122, 140, 0.08);
+}
+
+.matrix-checkbox-container .checkmark::after {
+  content: "";
+  position: absolute;
+  display: none;
+  left: 8px;
+  top: 4px;
+  width: 6px;
+  height: 11px;
+  border: solid var(--primary-color);
+  border-width: 0 2.5px 2.5px 0;
+  transform: rotate(45deg);
+}
+
+.matrix-checkbox-container input:checked ~ .checkmark::after {
+  display: block;
+}
+
+.matrix-checkbox-container input:disabled ~ .checkmark {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background-color: rgba(184, 191, 201, 0.2);
+  box-shadow: var(--shadow-small-pressed);
+}
+
+.matrix-checkbox-container input:disabled ~ .checkmark::after {
+  border-color: var(--text-secondary);
+}
+
+/* Permissions Matrix Table Specific Styling */
+.permissions-matrix-table td {
+  vertical-align: middle;
+}
+
+/* Week Grid Layout */
+.week-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+@media (min-width: 992px) {
+  .week-grid {
+    grid-template-columns: repeat(7, 1fr);
+    gap: 8px;
+  }
+}
+
+.week-day-col {
+  background-color: var(--surface-color);
+  border-radius: var(--border-radius);
+  box-shadow: var(--shadow-small);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  min-height: 150px;
+  transition: all var(--transition-speed) ease;
+}
+
+.week-day-col.week-day-selected {
+  box-shadow: var(--shadow-small-pressed);
+  border: 1px solid var(--primary-color);
+}
+
+.week-day-col.week-day-today {
+  box-shadow: var(--shadow-small-pressed);
+  border: 1.5px solid var(--accent-orange);
+}
+
+.week-day-header {
+  border-bottom: 1px solid rgba(184, 191, 201, 0.2);
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.week-day-name {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--primary-color);
+}
+
+.week-day-date {
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.week-day-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+}
+
+.week-appt-card {
+  background-color: var(--surface-color);
+  border-radius: 8px;
+  box-shadow: var(--shadow-small);
+  padding: 8px;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  font-size: 11.5px;
+}
+
+.week-appt-card:hover {
+  transform: translateY(-1px);
+  box-shadow: -2px -2px 4px var(--shadow-light), 2px 2px 4px var(--shadow-dark);
+}
+
+.week-appt-time {
+  font-weight: 800;
+  color: var(--primary-color);
+}
+
+.week-appt-patient {
+  font-weight: 700;
+  color: var(--text-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.week-appt-doctor {
+  font-size: 9px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.week-empty-text {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-align: center;
+  margin: auto 0;
+  padding: 10px 0;
+  font-style: italic;
+}
+
+/* Clickable table row hover state */
+.clickable-row:hover {
+  background-color: rgba(0, 122, 140, 0.04) !important;
+}
+
+/* Print Styles for PDF Export */
+@media print {
+  /* Hide the rest of the application shell */
+  #app-container,
+  .pdf-toolbar,
+  .pdf-viewer-overlay > .pdf-window > div:last-child, /* button bar */
+  .modal-overlay,
+  #global-fab,
+  button {
+    display: none !important;
+  }
+
+  .pdf-viewer-overlay {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    background: none !important;
+    backdrop-filter: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  .pdf-window {
+    box-shadow: none !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+  }
+
+  .pdf-body {
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  .pdf-results-table th {
+    background-color: #f2f2f2 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
+
+/* -------------------------------------------------------------
+ * 7. AUTHENTICATION & LOGIN SCREEN STYLING
+ * ------------------------------------------------------------- */
+
+/* Hide shell components when not logged in */
+.not-logged-in .top-app-bar,
+.not-logged-in .bottom-nav-bar,
+.not-logged-in #global-fab {
+  display: none !important;
+}
+
+/* Expand viewport for centering login view */
+.not-logged-in .main-content {
+  padding: 0;
+  padding-bottom: 0;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-color);
+  overflow: hidden;
+}
+
+.login-card-wrapper {
+  width: 100%;
+  max-width: 400px;
+  padding: 20px;
+  animation: loginFadeIn 0.4s ease;
+}
+
+.login-card {
+  background-color: var(--surface-color);
+  border-radius: 24px;
+  box-shadow: var(--shadow-flat);
+  padding: 32px;
+}
+
+.login-header {
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.login-logo {
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  box-shadow: var(--shadow-small);
+  margin: 0 auto 12px auto;
+  display: block;
+  padding: 2px;
+  background-color: var(--surface-color);
+  object-fit: cover;
+}
+
+.login-title {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--primary-color);
+  letter-spacing: -0.5px;
+}
+
+.login-subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 4px;
+}
+
+.login-error {
+  background-color: rgba(231, 76, 60, 0.05);
+  border-left: 4px solid var(--accent-red);
+  color: var(--accent-red);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 20px;
+  display: none;
+  animation: loginShake 0.3s ease;
+}
+
+/* Demo Accounts Help Panel */
+.demo-accounts-wrapper {
+  margin-top: 24px;
+  border-top: 1px dashed rgba(184, 191, 201, 0.3);
+  padding-top: 16px;
+}
+
+.demo-accounts-toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  font-size: 10.5px;
+  font-weight: 800;
+  color: var(--primary-color);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  user-select: none;
+}
+
+.demo-accounts-toggle i {
+  transition: transform 0.2s ease;
+}
+
+.demo-accounts-toggle.open i {
+  transform: rotate(180deg);
+}
+
+.demo-accounts-list {
+  display: none;
+  margin-top: 10px;
+  background-color: var(--surface-color);
+  box-shadow: var(--shadow-small-pressed);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.demo-account-item {
+  border-bottom: 1px solid rgba(184, 191, 201, 0.15);
+  padding: 6px 0;
+}
+
+.demo-account-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+@keyframes loginFadeIn {
+  from { opacity: 0; transform: translateY(15px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes loginShake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-4px); }
+  40%, 80% { transform: translateX(4px); }
+}
+
+
+
